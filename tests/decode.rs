@@ -202,6 +202,18 @@ reftest!(
     lossless_indexed_4bit_palette
 );
 
+#[test]
+fn lossless_alpha_is_preserved_when_hint_is_zero() {
+    let bytes = include_bytes!("images/regression/lossless_alpha_hint_zero.webp");
+    let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).unwrap();
+    assert!(decoder.has_alpha());
+    let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
+    decoder.read_image(&mut pixels).unwrap();
+    assert_eq!(pixels.len(), 101 * 7 * 4);
+    assert_eq!(&pixels[..4], &[0, 0, 0, 0]);
+    assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] != 255));
+}
+
 // Builds a minimal RIFF WebP containing only a VP8L header (no image data).
 // This is enough to test dimension parsing without needing valid pixel data.
 fn vp8l_dimensions_only_webp(width_minus_one: u32, height_minus_one: u32) -> Vec<u8> {

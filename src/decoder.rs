@@ -326,6 +326,7 @@ pub struct WebPDecoder<R> {
     loop_duration: u64,
 
     chunks: HashMap<WebPRiffChunk, Range<u64>>,
+    lossless_image: Option<Vec<u8>>,
 
     webp_decode_options: WebPDecodeOptions,
 }
@@ -350,6 +351,7 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
             num_frames: 0,
             kind: ImageKind::Lossy,
             chunks: HashMap::new(),
+            lossless_image: None,
             animation: Default::default(),
             memory_limit: usize::MAX,
             is_lossy: false,
@@ -423,6 +425,8 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
                 self.chunks
                     .insert(WebPRiffChunk::VP8L, start..start + chunk_size);
                 self.kind = ImageKind::Lossless;
+                // The alpha bit is only a hint. A false hint cannot rule out
+                // transparent pixels, which are checked below.
                 self.has_alpha = (header >> 28) & 1 != 0;
             }
             WebPRiffChunk::VP8X => {
@@ -544,6 +548,33 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
             }
             _ => return Err(DecodingError::ChunkHeaderInvalid(chunk.to_fourcc())),
         };
+
+        // `has_alpha()` and `output_buffer_size()` must be known before `read_image()`.
+        // Decode a lossless still with a false alpha hint so transparent pixels
+        // are not discarded. Keep the pixels for `read_image()` to avoid decoding
+        // twice. For large images, conservatively expose RGBA without allocating
+        // the output during construction.
+        if !self.is_animated() && !self.has_alpha {
+            if let Some(range) = self.chunks.get(&WebPRiffChunk::VP8L).cloned() {
+                let size = (self.width as usize)
+                    .checked_mul(self.height as usize)
+                    .and_then(|n| n.checked_mul(4))
+                    .ok_or(DecodingError::ImageTooLarge)?;
+                if size > 16 * 1024 * 1024 {
+                    self.has_alpha = true;
+                } else {
+                    let mut pixels = vec![0; size];
+                    let mut decoder = LosslessDecoder::new(range_reader(&mut self.r, range)?);
+                    if decoder
+                        .decode_frame(self.width, self.height, false, &mut pixels)
+                        .is_ok()
+                    {
+                        self.has_alpha = pixels.chunks_exact(4).any(|pixel| pixel[3] != 255);
+                        self.lossless_image = Some(pixels);
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -679,6 +710,16 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
             self.animation = saved;
             result?;
         } else if let Some(range) = self.chunks.get(&WebPRiffChunk::VP8L) {
+            if let Some(data) = &self.lossless_image {
+                if self.has_alpha {
+                    buf.copy_from_slice(data);
+                } else {
+                    for (rgba_val, chunk) in data.chunks_exact(4).zip(buf.chunks_exact_mut(3)) {
+                        chunk.copy_from_slice(&rgba_val[..3]);
+                    }
+                }
+                return Ok(());
+            }
             let mut decoder = LosslessDecoder::new(range_reader(&mut self.r, range.clone())?);
 
             if self.has_alpha {
