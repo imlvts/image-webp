@@ -426,7 +426,9 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
                 self.has_alpha = (header >> 28) & 1 != 0;
             }
             WebPRiffChunk::VP8X => {
-                let mut info = extended::read_extended_header(&mut self.r)?;
+                // The first ten bytes are defined by WebP. Ignore any future fields in
+                // this chunk, while keeping the header read inside its declared size.
+                let mut info = extended::read_extended_header(&mut (&mut self.r).take(chunk_size))?;
                 self.width = info.canvas_width;
                 self.height = info.canvas_height;
 

@@ -202,6 +202,29 @@ reftest!(
     lossless_indexed_4bit_palette
 );
 
+#[test]
+fn vp8x_future_fields_are_ignored() {
+    let simple = include_bytes!("images/regression/dark.webp");
+    let mut expected = [0; 3];
+    image_webp::WebPDecoder::new(Cursor::new(simple))
+        .unwrap()
+        .read_image(&mut expected)
+        .unwrap();
+
+    let mut extended =
+        b"RIFF\0\0\0\0WEBPVP8X\x0e\0\0\0\0\0\0\0\0\0\0\0\0\0\x11\x22\x33\x44".to_vec();
+    extended.extend_from_slice(&simple[12..]);
+    let riff_size = extended.len() as u32 - 8;
+    extended[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+    let mut actual = [0; 3];
+    image_webp::WebPDecoder::new(Cursor::new(extended))
+        .unwrap()
+        .read_image(&mut actual)
+        .unwrap();
+    assert_eq!(actual, expected);
+}
+
 // Builds a minimal RIFF WebP containing only a VP8L header (no image data).
 // This is enough to test dimension parsing without needing valid pixel data.
 fn vp8l_dimensions_only_webp(width_minus_one: u32, height_minus_one: u32) -> Vec<u8> {
